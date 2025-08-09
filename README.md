@@ -1,4 +1,5 @@
 Sistema de Análisis de Emociones y Bioseñales en Respuesta a Música Generativa
+
 Este proyecto forma parte de mi tesis doctoral, donde investigo la correlación entre las respuestas fisiológicas y emocionales de una persona y los estímulos musicales generados por un modelo de inteligencia artificial.
 
 El sistema completo se ejecuta en un entorno híbrido de Windows 11 con WSL2 y utiliza un dispositivo ESP32 para la captura de datos biométricos.
