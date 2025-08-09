@@ -1,106 +1,141 @@
-import argparse
-import os
-import time
-from datetime import datetime
 import cv2
-import threading
-import subprocess
-import wave
+import os
+import argparse
+import time
+from pygame import mixer
+from mutagen.wave import WAVE
+import warnings
 
-# Función para reproducir audio en Windows
-def reproducir_audio(audio_path):
-    print(f"DEBUG: Reproduciendo audio en Windows: {audio_path}")
+# Ignorar las advertencias de pygame sobre el API obsoleto
+warnings.filterwarnings("ignore", category=UserWarning)
+
+def capture_video_with_audio(output_folder, audio_path, camera_index, delay_s, session_id):
+    # Definir la ruta del archivo de señal en la carpeta compartida de Windows
+    shared_data_dir = "C:\\Users\\alvar\\Desktop\\DOCTORADO\\PROGRAMAS\\shared_data"
+    signal_dir = os.path.join(shared_data_dir, session_id)
+    signal_file = os.path.join(signal_dir, "start_signal.txt")
+    
+    # Si el índice de la cámara es None, buscar uno automáticamente
+    if camera_index is None:
+        print("DEBUG: Buscando índice de cámara disponible...")
+        found_camera = False
+        # Empezar la búsqueda desde el índice 1 para priorizar la cámara USB
+        for i in range(1, 10):
+            cap_test = cv2.VideoCapture(i)
+            if cap_test.isOpened():
+                camera_index = i
+                print(f"DEBUG: Cámara encontrada en el índice: {camera_index}")
+                cap_test.release()
+                found_camera = True
+                break
+            cap_test.release()
+        
+        # Si no se encuentra ninguna cámara aparte de la 0, usar la 0
+        if not found_camera:
+            print("ADVERTENCIA: No se encontró ninguna cámara USB. Se usará la cámara por defecto (índice 0).")
+            camera_index = 0
+
+    # --- Validación y obtención de duración ---
+    if not os.path.exists(audio_path):
+        print(f"ERROR: El archivo de audio no existe en '{audio_path}'")
+        return
+
     try:
-        # 'start' es un comando de Windows para abrir un archivo con su aplicación predeterminada
-        subprocess.Popen(['start', '', audio_path], shell=True)
+        audio_file = WAVE(audio_path)
+        audio_duration = audio_file.info.length
+        print(f"DEBUG: Duración real del audio detectada: {audio_duration:.2f} segundos")
     except Exception as e:
-        print(f"ERROR al reproducir audio en Windows: {e}")
+        print(f"ERROR al obtener duración con mutagen: {e}. Asumiendo 10.0 segundos.")
+        audio_duration = 10.0
 
-# Función para estimar la duración del audio (para archivos WAV)
-def estimar_duracion(audio_path):
-    try:
-        # Usamos wave para WAVs. Si se usan otros formatos, considerar pyDub o ffprobe (requiere ffmpeg)
-        with wave.open(audio_path, 'rb') as wf:
-            frames = wf.getnframes()
-            rate = wf.getframerate()
-            return frames / float(rate)
-    except Exception as e:
-        print(f"ERROR al obtener duración del audio: {e}. Asumiendo 10.0 segundos por defecto.")
-        return 10.0  # Asumir duración por defecto si falla la estimación
-
-def capturar_frames(output_dir, fps, duracion, camera_index=0): # <--- AÑADIDO: camera_index
-    print(f"DEBUG: Intentando activar cámara con índice: {camera_index}") # <--- CAMBIADO
-    cap = cv2.VideoCapture(camera_index) # <--- CAMBIADO: Usar el índice de la cámara
-
+    # --- Inicialización ---
+    mixer.init()
+    mixer.music.load(audio_path)
+    cap = cv2.VideoCapture(camera_index)
     if not cap.isOpened():
-        print(f"ERROR: No se pudo abrir la cámara con índice {camera_index}.")
-        print("Asegúrate de que la cámara esté conectada y no esté siendo usada por otra aplicación.")
-        print("Podrías probar otros índices (0, 1, 2, etc.) para tu cámara USB.")
-        return 0 # Devuelve 0 frames si no se puede abrir la cámara
+        print(f"ERROR: No se puede abrir la cámara con índice {camera_index}")
+        mixer.quit()
+        return
 
-    print(f"DEBUG: Cámara {camera_index} activada correctamente.") # <--- CAMBIADO
+    # --- Configurar la resolución y FPS de la cámara ---
+    # Se establece una resolución de 1280x720 (HD) y se intenta 30 FPS
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    cap.set(cv2.CAP_PROP_FPS, 30)
+
+    # --- Pre-captura para estabilización ---
+    print(f"DEBUG: Pre-captura iniciada para estabilizar la cámara. Esperando {delay_s} segundos...")
+    pre_capture_start = time.time()
+    while time.time() - pre_capture_start < delay_s:
+        ret, frame = cap.read()
+        if not ret:
+            print("ERROR: No se pudo capturar el frame durante la pre-captura.")
+            break
+        cv2.imshow('Pre-captura (no grabando)', frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+    
+    cv2.destroyAllWindows()
+    print("DEBUG: Pre-captura finalizada. Cámara estabilizada.")
+
+    # --- Creación de carpetas ---
+    session_folder_name = time.strftime("%Y-%m-%d_%H-%M-%S")
+    session_path = os.path.join(output_folder, session_folder_name)
+    os.makedirs(session_path, exist_ok=True)
+    print(f"DEBUG: Guardando frames en: {session_path}")
+
+    # --- Crear el archivo de señal para el script de Bash ---
+    print("DEBUG: Enviando señal de inicio a WSL2...")
+    # Asegurarse de que el directorio de la señal existe
+    os.makedirs(signal_dir, exist_ok=True)
+    with open(signal_file, 'w') as f:
+        f.write("start")
+
+    # --- Captura real ---
+    print("DEBUG: Iniciando reproducción y captura...")
+    mixer.music.play()
+
     start_time = time.time()
     frame_count = 0
 
-    while time.time() - start_time < duracion:
+    while time.time() - start_time < audio_duration:
         ret, frame = cap.read()
+
         if not ret:
-            print("ADVERTENCIA: No se pudo leer el frame de la cámara. Reintentando...") # <--- AÑADIDO
-            time.sleep(0.1) # Pequeña espera antes de reintentar # <--- AÑADIDO
-            continue
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")[:-3]
-        frame_name = f"frame_{frame_count:04d}_{timestamp}.jpg"
-        frame_path = os.path.join(output_dir, frame_name)
+            print("ERROR: No se pudo capturar el frame.")
+            break
         
-        try: # <--- AÑADIDO: Manejo de errores al guardar
-            cv2.imwrite(frame_path, frame)
-            # print(f"DEBUG: Frame guardado: {frame_path}") # Comentado para evitar spam excesivo
-            frame_count += 1
-        except Exception as e: # <--- AÑADIDO
-            print(f"ERROR al guardar el frame {frame_name}: {e}") # <--- AÑADIDO
+        cv2.putText(frame, "GRABANDO", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        cv2.imshow('Captura en Progreso', frame)
 
-        # Esperar para mantener el FPS deseado
-        time_elapsed_per_frame = time.time() - start_time - (frame_count -1) * (1 / fps) # <--- AÑADIDO
-        sleep_duration = (1 / fps) - time_elapsed_per_frame # <--- AÑADIDO
-        if sleep_duration > 0: # <--- AÑADIDO
-            time.sleep(sleep_duration) # <--- CAMBIADO: Antes era 1/fps directamente
+        # Guardamos el frame en formato PNG con alta calidad
+        frame_filename = os.path.join(session_path, f"frame_{frame_count:04d}.png")
+        cv2.imwrite(frame_filename, frame, [cv2.IMWRITE_PNG_COMPRESSION, 0])
+        frame_count += 1
 
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            mixer.music.stop()
+            break
+
+    print(f"DEBUG: Bucle de captura finalizado. Se capturaron {frame_count} frames.")
+    if frame_count == 0:
+        print("ADVERTENCIA: No se capturaron frames.")
+
+    # --- Limpieza ---
     cap.release()
-    print(f"DEBUG: Captura finalizada. Total de frames: {frame_count}")
-    return frame_count # <--- CAMBIADO: Devuelve el número de frames capturados
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--output', required=True, help='Ruta de salida de frames')
-    parser.add_argument('--audio', required=True, help='Ruta del archivo de audio')
-    parser.add_argument('--camera_index', type=int, default=0, # <--- AÑADIDO: Nuevo argumento para el índice de la cámara
-                        help='Índice de la cámara a usar (0 para la predeterminada, 1 para la primera USB, etc.)')
-    args = parser.parse_args()
-
-    # Crear carpeta única con timestamp dentro de output
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    subfolder = os.path.join(args.output, timestamp)
-    os.makedirs(subfolder, exist_ok=True)
-    print(f"DEBUG: Carpeta de salida creada: {subfolder}")
-
-    # Obtener duración estimada del audio
-    duracion = estimar_duracion(args.audio)
-    print(f"DEBUG: Duración estimada del audio: {duracion:.2f} segundos")
-
-    # Iniciar audio en un hilo (se ejecuta en Windows)
-    audio_thread = threading.Thread(target=reproduzir_audio, args=(args.audio,))
-    audio_thread.start()
-    print("DEBUG: Hilo de audio iniciado.")
-
-    # Capturar frames con el índice de cámara especificado
-    frames_captured = capturar_frames(subfolder, fps=10, duracion=duracion, camera_index=args.camera_index) # <--- CAMBIADO
-
-    # Esperar a que el hilo de audio termine (si no ha terminado ya)
-    audio_thread.join()
-    print("DEBUG: Hilo de audio finalizado.")
-
-    if frames_captured == 0: # <--- AÑADIDO
-        print("ADVERTENCIA: No se capturaron frames. Esto podría causar problemas en el análisis emocional.") # <--- AÑADIDO
+    cv2.destroyAllWindows()
+    # Usamos un timeout para evitar que el script se quede colgado
+    timeout_start = time.time()
+    while mixer.music.get_busy() and time.time() - timeout_start < 5:
+        time.sleep(0.1)
+    mixer.quit()
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Captura vídeo mientras reproduce un audio.")
+    parser.add_argument("--output", required=True, help="Carpeta base donde se guardarán los frames.")
+    parser.add_argument("--audio", required=True, help="Ruta al archivo de audio a reproducir.")
+    parser.add_argument("--camera_index", type=int, default=None, help="Índice de la cámara a usar. Si no se especifica, se buscará automáticamente.")
+    parser.add_argument("--delay", type=int, default=3, help="Tiempo de pre-captura en segundos para estabilizar la cámara.")
+    parser.add_argument("--session_id", required=True, help="ID de la sesión para el comando MQTT.")
+    args = parser.parse_args()
+    capture_video_with_audio(args.output, args.audio, args.camera_index, args.delay, args.session_id)

@@ -1,113 +1,123 @@
-# nombre_sugerido: receptor_controlado.py
-
 import paho.mqtt.client as mqtt
-import os
 import json
+import os
+import pandas as pd
+from datetime import datetime
+import csv
 
-# --- Configuración ---
-# Asegúrate de que estas variables coincidan con tu entorno
-MQTT_BROKER = "localhost"  # O "192.168.1.143" si el broker corre en el host
-MQTT_PORT = 1883
-DATA_TOPIC = "tesis/biomedidas"   # Tópico de donde vienen los datos del ESP32
-CONTROL_TOPIC = "tesis/control" # Tópico para recibir comandos (START/STOP)
-OUTPUT_DIR = "/home/alvar/datos_tesis/biomedidas" # Directorio base para guardar los CSV
+# ===============================================================
+# --- CONFIGURACIÓN ---
+# ===============================================================
+BROKER_ADDRESS = "localhost"
+TOPIC = "tesis/biomedidas"
+CONTROL_TOPIC = "tesis/control"
+# Directorio base para guardar los datos.
+DATA_DIR_BASE = "/home/alvar/biomedidas"
 
-# --- Variables de Estado Globales ---
+# ===============================================================
+# --- VARIABLES GLOBALES ---
+# ===============================================================
 is_recording = False
-output_file_handle = None
-
-# --- Funciones de Callback de MQTT ---
-
+session_id = ""
+output_file_path = ""
+csv_writer = None
+output_file = None
+# ===============================================================
+# --- FUNCIONES AUXILIARES ---
+# ===============================================================
 def on_connect(client, userdata, flags, rc):
-    """
-    Esta función se llama cuando el cliente se conecta exitosamente al broker.
-    """
+    """Callback que se ejecuta cuando el cliente se conecta."""
     if rc == 0:
-        print("✅ Receptor conectado exitosamente al Broker MQTT.")
-        # Se suscribe a ambos tópicos: el de datos y el de control
-        client.subscribe([(DATA_TOPIC, 0), (CONTROL_TOPIC, 0)])
-        print(f"   -> Escuchando datos en: '{DATA_TOPIC}'")
-        print(f"   -> Escuchando comandos en: '{CONTROL_TOPIC}'")
+        print("✅ Conectado al bróker MQTT.")
+        client.subscribe(TOPIC)
+        client.subscribe(CONTROL_TOPIC)
+        print(f"👂 Suscrito a los tópicos: '{TOPIC}' y '{CONTROL_TOPIC}'")
     else:
-        print(f"❌ Fallo al conectar al broker, código de error: {rc}")
+        print(f"❌ Fallo en la conexión, código de retorno: {rc}")
 
 def on_message(client, userdata, msg):
-    """
-    Esta función se llama cada vez que llega un mensaje a un tópico suscrito.
-    """
-    global is_recording, output_file_handle
+    """Callback que se ejecuta cuando se recibe un mensaje."""
+    global is_recording, session_id, output_file_path, csv_writer, output_file
     
-    try:
-        payload = msg.payload.decode("utf-8")
-        
-        # --- Lógica de Control: Procesa los comandos START/STOP ---
-        if msg.topic == CONTROL_TOPIC:
-            command_data = json.loads(payload)
-            command = command_data.get("command")
-            session_id = command_data.get("session_id")
+    if msg.topic == CONTROL_TOPIC:
+        try:
+            command = json.loads(msg.payload.decode())
+            if command.get("command") == "start":
+                # Si ya estamos grabando, lo ignoramos.
+                if is_recording:
+                    print("⚠️  Comando START ignorado. Ya hay una grabación en curso.")
+                    return
+                
+                session_id = command.get("session_id", datetime.now().strftime("%Y%m%d_%H%M%S"))
+                
+                # Prepara el directorio y el archivo de salida
+                data_dir_path = os.path.join(DATA_DIR_BASE, session_id)
+                if not os.path.exists(data_dir_path):
+                    os.makedirs(data_dir_path)
+                    print(f"📂 Creado directorio de salida: {data_dir_path}")
 
-            if command == "start" and session_id:
-                print(f"\n▶️  COMANDO START RECIBIDO (Sesión: {session_id})")
+                output_file_path = os.path.join(data_dir_path, "biomedidas.csv")
+
+                # Abre el archivo en modo 'append' para no sobreescribir y añade la cabecera si es nuevo
+                output_file = open(output_file_path, 'a', newline='')
+                csv_writer = csv.DictWriter(output_file, fieldnames=['timestamp', 'gsr', 'temp', 'hr', 'spo2'], delimiter=';')
+                
+                # Solo escribe la cabecera si el archivo no existía previamente
+                if output_file.tell() == 0:
+                    csv_writer.writeheader()
+
                 is_recording = True
+                print(f"▶️  Comando START recibido. Iniciando grabación de la sesión '{session_id}'.")
                 
-                # Crear el directorio de salida si no existe
-                os.makedirs(OUTPUT_DIR, exist_ok=True)
-                output_filename = os.path.join(OUTPUT_DIR, f"biomedidas_{session_id}.csv")
-                
-                # Abrir el archivo para esta sesión y escribir la cabecera
-                output_file_handle = open(output_filename, "w", newline="")
-                output_file_handle.write("timestamp,temp,hr,spo2,gsr\n")
-                
-                print(f"   -> Grabando datos en: {output_filename}")
+            elif command.get("command") == "stop":
+                if not is_recording:
+                    print("⚠️  Comando STOP ignorado. No hay ninguna grabación en curso.")
+                    return
 
-            elif command == "stop":
-                print(f"\n⏹️  COMANDO STOP RECIBIDO")
                 is_recording = False
-                if output_file_handle:
-                    output_file_handle.close()
-                    output_file_handle = None
-                print("   -> Grabación de biométricas finalizada.")
-
-        # --- Lógica de Grabación: Guarda los datos biométricos si está activado ---
-        elif msg.topic == DATA_TOPIC and is_recording:
-            data = json.loads(payload)
-            # Validar que el JSON contiene todos los campos esperados
-            if all(k in data for k in ["timestamp", "temp", "hr", "spo2", "gsr"]):
-                # Formatear la línea para el archivo CSV
-                csv_line = f"{data['timestamp']},{data['temp']},{data['hr']},{data['spo2']},{data['gsr']}\n"
                 
-                # Escribir en el archivo solo si está abierto
-                if output_file_handle and not output_file_handle.closed:
-                    output_file_handle.write(csv_line)
-                    # print(".", end="", flush=True) # Descomentar para un feedback visual de que se reciben datos
-            else:
-                print(f"\nADVERTENCIA: JSON recibido no tiene el formato esperado. Payload: {payload}")
+                # Cierra el archivo de grabación
+                if output_file:
+                    output_file.close()
+                    output_file = None
+                    csv_writer = None
+                    print(f"⏹️  Comando STOP recibido. Grabación detenida y datos guardados en '{output_file_path}'.")
                 
-    except json.JSONDecodeError:
-        print(f"\nERROR: No se pudo decodificar el JSON. Payload: {payload}")
-    except Exception as e:
-        print(f"\nERROR inesperado en on_message: {e}")
-
-
-# --- Programa Principal ---
-
-if __name__ == "__main__":
-    print("Iniciando receptor de biométricas controlado...")
+        except json.JSONDecodeError:
+            print(f"⚠️ Error al decodificar JSON de control: {msg.payload}")
     
-    # Crear y configurar el cliente MQTT
-    client = mqtt.Client("ReceptorControladoTesis")
+    elif msg.topic == TOPIC and is_recording:
+        try:
+            biomedida = json.loads(msg.payload.decode())
+            
+            # Escribe la muestra directamente al archivo CSV
+            if csv_writer:
+                csv_writer.writerow(biomedida)
+                print(f"➡️ Recibido y guardado dato para la sesión '{session_id}': {biomedida}")
+        except json.JSONDecodeError:
+            print(f"⚠️ Error al decodificar JSON de datos: {msg.payload}")
+
+# ===============================================================
+# --- FUNCIÓN PRINCIPAL ---
+# ===============================================================
+def main():
+    """Función principal del script."""
+    print("\n--- Receptor MQTT de Bioseñales ---")
+    
+    client = mqtt.Client(client_id=f"receptor_biomedidas_{os.getpid()}")
     client.on_connect = on_connect
     client.on_message = on_message
 
     try:
-        # Intentar conectar al broker
-        client.connect(MQTT_BROKER, MQTT_PORT, 60)
-        
-        # loop_forever() es un bucle bloqueante que mantiene la conexión
-        # y procesa los mensajes entrantes automáticamente.
+        client.connect(BROKER_ADDRESS, 1883, 60)
         client.loop_forever()
-        
-    except ConnectionRefusedError:
-        print(f"❌ ERROR: Conexión rechazada. ¿Está el broker MQTT corriendo en {MQTT_BROKER}?")
     except Exception as e:
-        print(f"❌ ERROR al iniciar el cliente MQTT: {e}")
+        print(f"❌ No se pudo conectar al bróker MQTT: {e}")
+    finally:
+        if output_file:
+            output_file.close()
+        client.disconnect()
+        print("🔌 Conexión MQTT cerrada.")
+
+if __name__ == "__main__":
+    main()
