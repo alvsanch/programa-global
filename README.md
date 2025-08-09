@@ -1,102 +1,47 @@
-# Sistema de Captura y Análisis Emocional v3.0
+Sistema de Análisis de Emociones y Bioseñales en Respuesta a Música Generativa
+Este proyecto forma parte de mi tesis doctoral, donde investigo la correlación entre las respuestas fisiológicas y emocionales de una persona y los estímulos musicales generados por un modelo de inteligencia artificial.
 
-Este repositorio contiene un sistema completo para capturar, sincronizar y analizar datos biométricos y emociones basadas en música. El sistema integra un ESP32 con sensores biométricos, scripts Python y Bash para control, y utilidades para procesamiento en Windows y Linux.
+El sistema completo se ejecuta en un entorno híbrido de Windows 11 con WSL2 y utiliza un dispositivo ESP32 para la captura de datos biométricos.
 
----
+⚙️ Componentes del Sistema
+El proyecto se compone de varios scripts que trabajan de forma sincronizada:
 
-## Tabla de Contenidos
+Componente	Entorno de Ejecución	Descripción
+script_global.sh	WSL2 (Bash)	Es el orquestador principal. Monitorea la carpeta de música generada, coordina el inicio y final de la grabación de vídeo y biomedidas, y lanza el análisis de emociones.
+capture_10s.py	Windows 11 (Python)	Controla la cámara y la reproducción del audio. Inicia una pre-captura para estabilizar el enfoque, graba los frames a 30 FPS en alta calidad (PNG) y crea un archivo de señal para sincronizarse con WSL2.
+receptor_controlado.py	WSL2 (Python)	Un cliente MQTT que se ejecuta en segundo plano. Recibe los comandos START y STOP y los datos biométricos del ESP32, guardando la información en un archivo CSV.
+analizar_emocion.py	WSL2 (Python)	Procesa los frames de vídeo capturados por la cámara y utiliza DeepFace para detectar y clasificar las emociones faciales del sujeto de prueba.
+final_ESP32.ino	Arduino (ESP32)	El firmware del ESP32. Utiliza sensores para medir la bioseñal (ritmo cardíaco, SpO2, respuesta galvánica de la piel) y publica los datos vía MQTT.
 
-- [Descripción general](#descripción-general)
-- [Estructura de archivos](#estructura-de-archivos)
-- [Requisitos](#requisitos)
-- [Funcionamiento general](#funcionamiento-general)
-    - [1. ESP32: Adquisición de datos biométricos](#1-esp32-adquisición-de-datos-biométricos)
-    - [2. Receptor y Control de Grabación (Python)](#2-receptor-y-control-de-grabación-python)
-    - [3. Script de Coordinación (Bash)](#3-script-de-coordinación-bash)
-    - [4. Captura de frames y sincronización con audio (Windows/Python)](#4-captura-de-frames-y-sincronización-con-audio-windowspython)
-- [Flujo de trabajo](#flujo-de-trabajo)
-- [Notas adicionales](#notas-adicionales)
-- [Créditos](#créditos)
+Exportar a Hojas de cálculo
+🚀 Flujo de Trabajo
+El proceso de captura y análisis se automatiza por completo de la siguiente manera:
 
----
+Generación de música: El modelo generativo ace-step (no incluido en este repositorio) produce un archivo de audio (.wav) en una carpeta específica de WSL2.
 
-## Descripción general
+Detección y Sincronización: script_global.sh detecta el nuevo archivo y lanza capture_10s.py en Windows. El script de Windows inicia la cámara y, tras un breve periodo de estabilización, crea un archivo de señal.
 
-El sistema permite:
+Grabación Sincronizada: script_global.sh detecta el archivo de señal, envía el comando START por MQTT al receptor_controlado.py y a la vez, capture_10s.py comienza a grabar frames y reproducir la música.
 
-- Capturar datos biométricos (temperatura, ritmo cardíaco, SpO2, GSR) en tiempo real con ESP32 y sensores.
-- Sincronizar comandos de inicio/fin de grabación a través de MQTT.
-- Ejecutar scripts que controlan la grabación de biométricas, frames de vídeo y audio de música generada.
-- Almacenar y estructurar los datos para su posterior análisis emocional.
+Finalización: Al terminar la música, el script de Bash envía el comando STOP a través de MQTT, deteniendo la grabación de biomedidas.
 
-## Estructura de archivos
+Análisis: Finalmente, analizar_emocion.py procesa los frames de vídeo capturados, generando un archivo CSV con el análisis emocional para su posterior correlación con los datos biométricos.
 
-- `final_ESP32.ino` — Código para ESP32. Lee sensores, publica datos vía MQTT.
-- `receptor_controlado.py` — Script Python receptor para guardar datos biométricos en CSV, controlado por comandos MQTT.
-- `script_global.sh` — Script Bash que automatiza la ejecución de todo el flujo experimental, controla la grabación y análisis.
-- `capture_10s.py` — Script Python para Windows: sincroniza la reproducción de audio y la captura de frames de vídeo.
-- (Otros scripts, como `analizar_emocion.py`, pueden ser referenciados pero no están incluidos aquí.)
+🛠️ Requisitos del Sistema
+Sistema operativo: Windows 11
 
-## Requisitos
+Entorno de virtualización: WSL2
 
-- **Hardware:** ESP32, Sensor MAX30105, Sensor TMP102 o similar, sensor GSR, cámara USB.
-- **Software:**
-    - Python 3.x (Linux y/o Windows)
-    - Bibliotecas Python: `paho-mqtt`, `opencv-python`, `wave`
-    - MQTT Broker (`mosquitto` recomendado)
-    - Arduino IDE y dependencias (para ESP32)
-    - Bash y utilidades GNU/Linux
-    - PowerShell (en Windows)
+Hardware: PC con al menos 32 GB de RAM y una RTX 4050 o superior.
 
-## Funcionamiento general
+Dispositivos: ESP32 con los sensores correspondientes y una cámara USB.
 
-### 1. ESP32: Adquisición de datos biométricos
+Software:
 
-- Lee datos de sensores (pulso, SpO2, temperatura, GSR).
-- Publica datos formateados en JSON por MQTT en el tópico `tesis/biomedidas`.
+Python 3.12 (en ambos entornos)
 
-### 2. Receptor y Control de Grabación (Python)
+Docker Desktop (para el broker MQTT)
 
-- `receptor_controlado.py` se suscribe a dos tópicos:
-    - `tesis/biomedidas`: recibe datos biométricos.
-    - `tesis/control`: recibe comandos JSON (`start/stop`).
-- Al recibir `start`, comienza una nueva grabación en CSV. Al recibir `stop`, finaliza y cierra el archivo.
+IDE de Arduino
 
-### 3. Script de Coordinación (Bash)
-
-- `script_global.sh` automatiza el proceso:
-    1. Inicia el receptor de biométricas.
-    2. Monitorea un directorio de archivos de música.
-    3. Por cada archivo nuevo:
-        - Envía comando `start` (MQTT) para iniciar grabación biométrica.
-        - Llama a `capture_10s.py` en Windows (vía PowerShell) para reproducir audio y capturar frames de la cámara.
-        - Envía comando `stop` (MQTT) para finalizar grabación biométrica.
-        - Ejecuta el análisis emocional sobre los frames capturados.
-
-### 4. Captura de frames y sincronización con audio (Windows/Python)
-
-- `capture_10s.py` recibe la ruta de salida, audio y el índice de cámara.
-- Estima duración del audio, inicia reproducción y captura de frames sincronizada.
-
-## Flujo de trabajo
-
-1. **Preparar todo el hardware**: sensores conectados al ESP32, cámara lista, broker MQTT en funcionamiento.
-2. **Cargar y ejecutar `final_ESP32.ino` en el ESP32.**
-3. **Ejecutar `script_global.sh` en Linux**: este script lanzará el receptor, analizará nuevos archivos de música y coordinará todo el flujo automáticamente.
-4. **En Windows, asegúrate de tener `capture_10s.py` y los archivos de audio y scripts necesarios.**
-5. **El sistema manejará la grabación, sincronización y análisis de los datos biométricos y visuales.**
-
-## Notas adicionales
-
-- **Configuración**: Modifica las rutas en los scripts para adaptarlas a tu entorno.
-- **MQTT Broker**: Asegúrate de que el broker esté activo y accesible para todos los dispositivos.
-- **Permisos**: Algunos scripts requieren permisos de ejecución y acceso a dispositivos.
-
-## Créditos
-
-- Inspirado y desarrollado por [alvsanch](https://github.com/alvsanch).
-- Basado en múltiples recursos de la comunidad para integración de sensores, MQTT y análisis emocional.
-
----
-
-¡Para cualquier duda, revisa los comentarios en cada script y abre un issue!
+Librerías de Python: paho-mqtt, pygame, mutagen, deepface, opencv-python, pandas.
