@@ -1,48 +1,63 @@
-Sistema de Análisis de Emociones y Bioseñales en Respuesta a Música Generativa
+Tesis: Emociones a través de la Música y Bioseñales
 
-Este proyecto forma parte de mi tesis doctoral, donde investigo la correlación entre las respuestas fisiológicas y emocionales de una persona y los estímulos musicales generados por un modelo de inteligencia artificial.
+Este repositorio contiene el código de la tesis doctoral que tiene como objetivo principal la traducción de bioseñales y expresiones faciales a emociones, utilizando estas emociones para guiar la generación de música a través de un modelo ace-step optimizado. El proyecto integra hardware (ESP32 con sensores) y software (servidores, scripts de control, y una interfaz Gradio) en un ecosistema de Windows 11 con WSL2.
 
-El sistema completo se ejecuta en un entorno híbrido de Windows 11 con WSL2 y utiliza un dispositivo ESP32 para la captura de datos biométricos.
+🛠️ Tecnologías y Módulos Principales
+El flujo de trabajo completo se orquesta a través de varios módulos interconectados.
 
-⚙️ Componentes del Sistema
-El proyecto se compone de varios scripts que trabajan de forma sincronizada:
+1. 🎵 Generación Musical (ACE-Step)
+Descripción: Un modelo generativo de música (ace-step) que se ajusta (fine-tuning) para producir piezas musicales que evocan estados emocionales específicos.
 
-Componente	Entorno de Ejecución	Descripción
-script_global.sh	WSL2 (Bash)	Es el orquestador principal. Monitorea la carpeta de música generada, coordina el inicio y final de la grabación de vídeo y biomedidas, y lanza el análisis de emociones.
-capture_10s.py	Windows 11 (Python)	Controla la cámara y la reproducción del audio. Inicia una pre-captura para estabilizar el enfoque, graba los frames a 30 FPS en alta calidad (PNG) y crea un archivo de señal para sincronizarse con WSL2.
-receptor_controlado.py	WSL2 (Python)	Un cliente MQTT que se ejecuta en segundo plano. Recibe los comandos START y STOP y los datos biométricos del ESP32, guardando la información en un archivo CSV.
-analizar_emocion.py	WSL2 (Python)	Procesa los frames de vídeo capturados por la cámara y utiliza DeepFace para detectar y clasificar las emociones faciales del sujeto de prueba.
-final_ESP32.ino	Arduino (ESP32)	El firmware del ESP32. Utiliza sensores para medir la bioseñal (ritmo cardíaco, SpO2, respuesta galvánica de la piel) y publica los datos vía MQTT.
+Archivos Clave:
 
-Exportar a Hojas de cálculo
-🚀 Flujo de Trabajo
-El proceso de captura y análisis se automatiza por completo de la siguiente manera:
+run_acestep.sh: Script de bash para lanzar de forma segura la GUI de ace-step dentro de un entorno virtual de WSL2.
 
-Generación de música: El modelo generativo ace-step (no incluido en este repositorio) produce un archivo de audio (.wav) en una carpeta específica de WSL2.
+2. ❤️ Recopilación de Bioseñales (ESP32)
+Descripción: Un microcontrolador ESP32 equipado con sensores para capturar datos fisiológicos en tiempo real, como ritmo cardíaco (HR), oximetría de pulso (SpO2), respuesta galvánica de la piel (GSR) y temperatura.
 
-Detección y Sincronización: script_global.sh detecta el nuevo archivo y lanza capture_10s.py en Windows. El script de Windows inicia la cámara y, tras un breve periodo de estabilización, crea un archivo de señal.
+Archivos Clave:
 
-Grabación Sincronizada: script_global.sh detecta el archivo de señal, envía el comando START por MQTT al receptor_controlado.py y a la vez, capture_10s.py comienza a grabar frames y reproducir la música.
+final_ESP32.ino: Código Arduino para el ESP32. Se conecta a un bróker MQTT, recopila datos de los sensores (MAX30105 y TMP102) y los publica. También es capaz de recibir comandos de start y stop a través de un tópico de control MQTT.
 
-Finalización: Al terminar la música, el script de Bash envía el comando STOP a través de MQTT, deteniendo la grabación de biomedidas.
+receptor_controlado.py: Script de Python que se ejecuta en WSL2 y se suscribe a los tópicos MQTT. Recibe las bioseñales y los comandos, guardando los datos en un archivo CSV por sesión.
 
-Análisis: Finalmente, analizar_emocion.py procesa los frames de vídeo capturados, generando un archivo CSV con el análisis emocional para su posterior correlación con los datos biométricos.
+3. 📸 Captura y Análisis de Emociones Faciales
+Descripción: Durante la reproducción de la música generada, se captura el vídeo del usuario. Los frames de este vídeo se analizan con DeepFace para detectar la emoción dominante.
 
-🛠️ Requisitos del Sistema
-Sistema operativo: Windows 11
+Archivos Clave:
 
-Entorno de virtualización: WSL2
+camera_server.py: Servidor Flask en Windows 11 que gestiona la cámara web. Proporciona endpoints para iniciar/detener la cámara y grabar frames de vídeo, opcionalmente sincronizado con un archivo de audio.
 
-Hardware: PC con al menos 32 GB de RAM y una RTX 4050 o superior.
+capture_10s.py: Un script de Python para Windows que graba vídeo sincronizado con un audio WAV y guarda los frames en una carpeta específica.
 
-Dispositivos: ESP32 con los sensores correspondientes y una cámara USB.
+analizar_emocion.py: Script de Python que utiliza la biblioteca DeepFace para procesar una carpeta de frames y generar un archivo CSV con la emoción dominante y las puntuaciones de cada emoción por frame.
 
-Software:
+4. 🚀 Orquestación y Flujo de Trabajo
+El proyecto utiliza una combinación de scripts y una interfaz gráfica para gestionar todo el proceso de forma manual o automática.
 
-Python 3.12 (en ambos entornos)
+Archivos Clave:
 
-Docker Desktop (para el broker MQTT)
+iniciar_tesis.bat: Archivo de batch para Windows que lanza el servidor de cámara y la interfaz de WSL2 de forma unificada.
 
-IDE de Arduino
+start_all.sh: Script de bash que se ejecuta en WSL2. Inicia el receptor de bioseñales en segundo plano y la interfaz gráfica de Gradio en primer plano.
 
-Librerías de Python: paho-mqtt, pygame, mutagen, deepface, opencv-python, pandas.
+app_tesis.py: Interfaz de usuario completa desarrollada con Gradio. Permite controlar todos los módulos:
+
+Flujo principal: Gestiona la creación de sesiones, la grabación sincronizada y el análisis de datos.
+
+Análisis facial: Controla la cámara y la grabación manual o en modo automático (monitorizando la salida de ace-step).
+
+Biomedidas: Permite el control manual del dispositivo ESP32 y la visualización de los datos recopilados.
+
+script_global.sh: Un script de bash más robusto que ofrece un modo manual y un modo de monitorización para automatizar el ciclo de generación musical, grabación de bioseñales y análisis facial.
+
+⚙️ Configuración y Requisitos
+El entorno está diseñado para ejecutarse en Windows 11 con WSL2.
+
+Sistema Operativo: Windows 11.
+
+Entorno WSL2: Se requiere una distribución de Linux, como Ubuntu, para ejecutar los scripts de bash y las aplicaciones de Python.
+
+Hardware: Se utiliza un ordenador con GPU (como una RTX 4050 con 32 GB de RAM), una cámara web y un microcontrolador ESP32 con sensores.
+
+Dependencias de Software: Python 3, pip, venv, Docker o Mosquitto (para el bróker MQTT), inotify-tools (para la monitorización de archivos), y varias bibliotecas de Python como flask, opencv-python, deepface, gradio, paho-mqtt, pandas, plotly, mutagen, pygame y watchdog.
